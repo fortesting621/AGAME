@@ -6,7 +6,8 @@
 Что делает:
   1. Проверяет, что PyInstaller установлен (если нет — ставит).
   2. Собирает в build/ButtKIkersUnited/ готовую игру: ButtKIkersUnited.exe
-     + папка _internal с ресурсами (sprites, screen, sounds, fonts, mus).
+     + папка _internal с ресурсами (sprites, screen, sounds, fonts, mus)
+     и кодом игры (папка buttkikers с модулями).
   3. Папку build/ButtKIkersUnited целиком копируют на любой компьютер с Windows
      и запускают ButtKIkersUnited.exe — Python там не нужен.
 
@@ -14,7 +15,10 @@
 распаковываются во временную папку при каждом запуске — старт занимает секунды.
 С папкой запуск мгновенный.
 
-Путь к ресурсам игра берёт из sys._MEIPASS (см. BASE_DIR в buttkikers_united.py) —
+Сборка идёт от buttkikers_united.py — это точка входа, она только импортирует
+buttkikers.game; сам код игры PyInstaller подтянет сам по этим импортам.
+
+Путь к ресурсам игра берёт из sys._MEIPASS (см. BASE_DIR в buttkikers/settings.py) —
 поэтому игру можно запускать откуда угодно, exe не обязан лежать в папке AGAME.
 """
 import os
@@ -24,6 +28,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 GAME = os.path.join(HERE, "buttkikers_united.py")
+PKG = os.path.join(HERE, "buttkikers")
 BUILD_DIR = os.path.join(HERE, "build")
 OUT_NAME = "ButtKIkersUnited"
 # Папки с ресурсами, которые кладём рядом с exe.
@@ -47,6 +52,9 @@ def main():
     if not os.path.exists(GAME):
         print(f"НЕ НАЙДЕН ИГРА: {GAME}")
         return 1
+    if not os.path.isdir(PKG):
+        print(f"НЕ НАЙДЕН ПАКЕТ С КОДОМ ИГРЫ: {PKG}")
+        return 1
 
     ensure_pyinstaller()
 
@@ -65,6 +73,7 @@ def main():
         "--distpath", BUILD_DIR,     # onedir сам создаст build/OUT_NAME/
         "--workpath", os.path.join(BUILD_DIR, "_work"),
         "--specpath", BUILD_DIR,
+        "--paths", HERE,              # чтобы пакет buttkikers нашёлся рядом с точкой входа
     ]
     for d in DATA_DIRS:
         src = os.path.join(HERE, d)
