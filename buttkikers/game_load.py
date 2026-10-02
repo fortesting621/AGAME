@@ -88,6 +88,8 @@ class GameLoad:
                 self.sfx["step"].set_volume(SFX_FOOTSTEP_VOL)   # громкость шагов — в настройках
             if "start" in self.sfx:
                 self.sfx["start"].set_volume(SFX_START_VOL)   # нажатие START — тише
+            if "menu" in self.sfx:
+                self.sfx["menu"].set_volume(SFX_MENU_VOL)     # выбор в меню — своя громкость
             # Звуки персонажа (sounds/char): прыжок и удары. Ключ в CHAR_SFX — действие,
             # файл ищется по имени анимации (сильная нога -> mma), плюс запасной поиск
             # по слову в имени, чтобы файл можно было переименовать.
@@ -108,8 +110,10 @@ class GameLoad:
             # Действия с несколькими вариантами: подбираем ВСЕ файлы по префиксу
             # (jump -> jump1, jump2, ...) и храним списком. play_sfx выбирает из списка
             # случайный, поэтому добавил новый файл — вариантов станет больше.
+            # Файлы из CHAR_SFX (например jumpALT.mp3) исключаем: они привязаны к своему
+            # действию, хотя имя и начинается с того же префикса.
             for key, prefix in CHAR_SFX_RANDOM.items():
-                paths = find_sfx_all(prefix, CHAR_SOUND_DIR)
+                paths = find_sfx_all(prefix, CHAR_SOUND_DIR, CHAR_SFX.values())
                 variants = []
                 for path in paths:
                     try:
@@ -124,6 +128,12 @@ class GameLoad:
                 self.sfx[key] = variants
                 names = ", ".join(os.path.basename(p) for p in paths)
                 print(f"[SFX] {key}: {len(variants)} варианта(ов) наугад — {names}")
+            # Своя громкость для отдельных звуков (качение, доп. звук прыжка) —
+            # общая CHAR_SFX_VOL им не применяется. Список — в CHAR_SFX_VOL_OWN.
+            for key, vol in CHAR_SFX_VOL_OWN.items():
+                if key in self.sfx:
+                    self.sfx[key].set_volume(vol)
+                    print(f"[SFX] {key}: своя громкость {vol}")
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
         pygame.display.set_caption("ButtKIkers United — BEAT-EM-UP")
         self.clock = pygame.time.Clock()

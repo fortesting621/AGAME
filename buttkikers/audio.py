@@ -43,24 +43,29 @@ def find_sfx(name, keyword="", subdir=""):
     return os.path.join(sdir, found[0]) if found else None
 
 
-def find_sfx_all(prefix, subdir=""):
+def find_sfx_all(prefix, subdir="", exclude=()):
     """Все звуковые файлы в папке sounds/subdir, имя которых начинается с prefix.
 
     Нужно для действий с несколькими вариантами звука: префикс "jump" находит
     jump1.mp3, jump2.mp3, jump3.mp3, jump4.mp3. Расширения берутся из SFX_EXT,
     сравнение без учёта регистра. Список отсортирован — порядок стабильный между
     запусками. Нет папки или нет файлов — пустой список.
+    exclude — имена файлов, которые не надо брать (обычно значения из CHAR_SFX):
+    например jumpALT.mp3 начинается с "jump", но привязан к своему действию и в
+    случайные варианты прыжка попадать не должен.
     """
     sub = subdir.replace("/", os.sep).replace("\\", os.sep)
     if sub.lower().startswith("sounds" + os.sep):
         sub = sub[len("sounds") + 1:]
     sdir = os.path.join(BASE_DIR, "sounds", sub)
     low = (prefix or "").lower()
+    skip = {str(e).lower() for e in exclude}
     if not low:
         return []
     try:
         names = sorted(n for n in os.listdir(sdir)
                        if n.lower().endswith(SFX_EXT)
+                       and n.lower() not in skip
                        and os.path.splitext(n)[0].lower().startswith(low))
     except OSError:
         return []
@@ -139,14 +144,24 @@ class GameAudio:
                 left.append(item)
         self.sfx_queue = left
 
-
     def update_footsteps(self, pl):
-        """Шаги: звук каждые FOOTSTEP_TIME кадров, пока боец бежит по земле."""
-        if pl.dead or pl.jumping or not pl.on_ground or not pl.was_moving:
-            pl.step_t = 0                      # стоим — первый шаг сразу при старте бега
+        """Шаги: звук каждые FOOTSTEP_TIME кадров, пока боец бежит по земле.
+
+        Во время переката шагов нет: персонаж катится, а не бежит (was_moving при
+        перекате тоже True — скорость задаёт сама анимация), иначе шли бы rapid
+        шаги поверх звука переката.
+        """
+        if pl.dead or pl.jumping or pl.rolling or not pl.on_ground or not pl.was_moving:
+            pl.step_t = 0                      # стоим — первый шаг сразу на старте бега
             return
         if pl.step_t > 0:
             pl.step_t -= 1
             return
-        pl.step_t = FOOTSTEP_TIME
+        # Крадущийся идёт вдвое медленнее бега (CRWALK_SPEED_MUL = 0.5), поэтому и
+        # шаги вдвое реже: интервал делим на скорость крадущегося шага. Поменяете
+        # CRWALK_SPEED_MUL — частота шагов поедет вместе с ним.
+        step_every = FOOTSTEP_TIME
+        if pl.crouch_walking:
+            step_every = int(round(FOOTSTEP_TIME / max(0.1, float(CRWALK_SPEED_MUL))))
+        pl.step_t = step_every
         self.play_sfx("step")

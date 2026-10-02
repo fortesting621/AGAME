@@ -179,9 +179,13 @@ class Fighter:
         self.jump_speed = length / self.jump_dur
         self.jump_frame = 0
         self.vel_y = 0
-        # Звук прыжка (задержка — из CHAR_SFX_DELAY_MS, сейчас "0")
+        # Звук прыжка: основной (случайный из jump1-4) и два дополнительных
+        # (jumpALT.mp3, jumpALT2.mp3). Все три при каждом прыжке, у каждого своя
+        # задержка в CHAR_SFX_DELAY_MS
         if getattr(self, "game", None):
             self.game.play_sfx_delayed("jump")
+            self.game.play_sfx_delayed("jump_alt")
+            self.game.play_sfx_delayed("jump_alt2")
 
     def try_roll(self):
         """Запуск переката, если не занят и не перезаряжается. True — перекат начался.
@@ -215,6 +219,11 @@ class Fighter:
         self.crouching = False
         self.now_blocking = False
         self.crouch_walking = False
+        # Звук переката: roll.mp3 (звук качения) и шорох прыжка. У качения своя
+        # задержка (SFX_ROLL_DELAY_MS), у шороха — из CHAR_SFX_DELAY_MS
+        if getattr(self, "game", None):
+            self.game.play_sfx_delayed("roll", SFX_ROLL_DELAY_MS)
+            self.game.play_sfx_delayed("roll_jump")
         self.sit_t = 0
         self.sit_dir = 0
         self.sit_acc = 0.0
@@ -353,23 +362,26 @@ class Player(Fighter):
             up = keys[pygame.K_w] or keys[pygame.K_UP] or gp_u
             down = keys[pygame.K_s] or keys[pygame.K_DOWN] or gp_d
             punch = keys[pygame.K_j] or gp_p      # Z свободен: переключает нижнюю панель
-            kik = keys[pygame.K_l] or gp_n        # L — обычный удар ноги
-            kick = keys[pygame.K_x] or keys[pygame.K_k] or gp_k
-        else:                                    # P1 в кооперативе: только WASD + J/K/L
+            kik = keys[pygame.K_k] or gp_n        # K — обычный удар ноги
+            kick = keys[pygame.K_i] or gp_k      # I — сильный удар ногой (mma)
+        else:                                    # P1 в кооперативе: только WASD + J/K/I
             left = keys[pygame.K_a] or gp_l
             right = keys[pygame.K_d] or gp_r
             up = keys[pygame.K_w] or gp_u
             down = keys[pygame.K_s] or gp_d
             punch = keys[pygame.K_j] or gp_p
-            kik = keys[pygame.K_l] or gp_n
-            kick = keys[pygame.K_k] or gp_k
+            kik = keys[pygame.K_k] or gp_n
+            kick = keys[pygame.K_i] or gp_k
 
         self.crouching = False
-        # Фронт нажатия триггера (roll_edge) считаем ЗДЕСЬ, до всех ранних return: флаг
-        # «триггер был нажат» должен обновляться каждый кадр, в том числе во время
-        # переката и удара. Иначе при УДЕРЖАНИИ триггера перекат повторялся бы сам.
-        self.roll_edge = gp_roll and not self.roll_trigger_held
-        self.roll_trigger_held = gp_roll
+        # Фронт нажатия переката (roll_edge) считаем ЗДЕСЬ, до всех ранних return: флаг
+        # «перекат нажат» должен обновляться каждый кадр, в том числе во время
+        # переката и удара. Иначе при УДЕРЖАНИИ O перекат повторялся бы сам.
+        # Перекат — клавиша O или правый триггер геймпада; на паузе (self.pnum == 0)
+        # клавиша не читается, иначе игрок перекатывался бы на чужом нажатии.
+        roll_now = gp_roll if self.pnum == 1 else (gp_roll or keys[pygame.K_o])
+        self.roll_edge = roll_now and not self.roll_trigger_held
+        self.roll_trigger_held = roll_now
         # Перекат уже идёт: персонаж катится сам, управление не действует. Управление
         # вернётся только когда анимация доиграет (rolling сбросится в Fighter.update).
         # vel_x и was_moving заданы в Fighter.update — там своя скорость переката.
@@ -429,8 +441,8 @@ class Player(Fighter):
                 self.y = CHARACTER_FLOOR_Y - self.h
                 self.vel_y = 0
             if not self.jumping:
-                # Перекат (правый триггер) — по фронту нажатия self.roll_edge, посчитанному
-                # выше. Идёт перед ударами: если нажаты оба, перекат важнее.
+                # Перекат (клавиша O или правый триггер) — по фронту нажатия self.roll_edge,
+                # посчитанному выше. Идёт перед ударами: если нажаты оба, перекат важнее.
                 if self.roll_edge and not self.rolling:
                     self.try_roll()
                 # удары только с земли: в прыжке не бьём ни кулаком, ни ногой
