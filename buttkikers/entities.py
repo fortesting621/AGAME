@@ -68,6 +68,7 @@ class Fighter:
         self.roll_cd = 0              # оставшиеся кадры кулдауна до следующего переката
         self.roll_trigger_held = False  # триггер был нажат в прошлом кадре (фронт нажатия)
         self.roll_edge = False     # триггер нажат именно в этом кадре (а не удерживается)
+        self.entry_roll = False  # идёт ли входной перекат на старте раунда (персонаж из-за края)
         self.dead = False              # мёртв ли
         self.dead_timer = 0            # кадры после смерти (для уборки трупа)
         self.dead_fall = 0             # прогресс "падения" тела на землю
@@ -269,6 +270,9 @@ class Fighter:
                 self.roll_t = 0
                 self.roll_frame = 0
                 self.vel_x = 0
+                # Входной перекат закончился — персонаж выехал на кадр, снова
+                # зажимаем его камерой (иначе можно было бы уйти за левый край).
+                self.entry_roll = False
                 # Бег после переката начинается с той же фазы, что и после приземления.
                 self.run_phase = move_phase_for_frame(frame, max(1, settings.RUN_ANIM_N),
                                                        RUN_START_FRAME)
@@ -314,7 +318,10 @@ class Fighter:
         else:
             self.was_moving = False
         self.vel_x = 0
-        self.x = max(cam, min(self.x, LEVEL_LEN - self.w))  # не даём уйти за уровень/камеру
+        # Входной перекат: персонаж начинает раунд за левым краем кадра, поэтому на это
+        # время разрешаем ему быть левее камеры — обычный зажим вернул бы его на кадр.
+        left_limit = -START_ROLL_BACK_PX if self.entry_roll else cam
+        self.x = max(left_limit, min(self.x, LEVEL_LEN - self.w))  # не даём уйти за уровень/камеру
 
         if self.now_blocking:         # сброс флага блока после обработки
             self.now_blocking = False
@@ -334,6 +341,21 @@ class Player(Fighter):
         self.moved = 0            # счётчик пройденных кадров движения (отладка)
         self.was_moving = False    # двигался ли игрок в этом кадре (для анимации бега)
         self.step_t = 0           # кадров до следующего шага
+
+    def start_entry_roll(self):
+        """Входной перекат на старте раунда: кувырок из-за левого края кадра.
+
+        Персонаж сдвигается назад за границу игрового кадра (x становится
+        отрицательным — его не видно) и начинает перекат, поэтому он выкатывается
+        на экран снизу, как будто выпрыгивает из-за края. Пока идёт перекат,
+        entry_roll держит камеру на месте и разрешает уход левее неё.
+        """
+        if not START_ROLL_ON or self.entry_roll:
+            return
+        self.x -= START_ROLL_BACK_PX    # уезжает за левый край кадра (cam = 0 на старте)
+        self.facing = 1                 # катиться вправо, на экран
+        self.entry_roll = True          # разрешаем быть левее камеры и держим камеру
+        self.start_roll()
 
     def update(self, cam, frame):
         # Состояние приседа, по которому отработала физика выше: высота хитбокса (h)

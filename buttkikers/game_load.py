@@ -26,15 +26,16 @@ class GameLoad:
         self.pad_nav_cd = 0           # кадры до следующего пункта меню при удержании стика
         self.pad_lt_held = False       # левый триггер был нажат в прошлом кадре (фронт)
         self.pad_lt_cd = 0             # кадры до следующего переключения изоляции
-        self.pad_info = ""             # подсказка про геймпад для нижней панели
+        self.pad_check_t = 0
+        self.pad_missed = 0
+        self.pad_reopen_t = 0           # счётчик перепроверки геймпадов (PAD_CHECK_FRAMES)
+        self.pad_connected = False     # геймпад подключён: панель показывает управление геймпадом,
+                                 # иначе — управление с клавиатуры
         pads = init_gamepads()
         if pads:
             for i, js in enumerate(pads):
                 print(f"[DEBUG] геймпад P{i + 1}: {js.get_name()}")
-            self.pad_info = ("ГЕЙМПАД: стик/крестовина   A — прыжок   X — кулак   "
-                             "B — нога   Y — нога сильная   "
-                             "LB/RB — фон вперёд   RT — назад   LT — изоляция фона   "
-                             "Start — заставка")
+            self.pad_connected = True
         elif GAMEPAD_ON:
             print("[DEBUG] геймпад не найден — играем с клавиатуры")
         self.audio_ok = False          # микшер звука инициализирован
@@ -146,6 +147,12 @@ class GameLoad:
         # Шрифт с поддержкой кириллицы для меню
         self.pixel_font_ru = pygame.font.Font(
             os.path.join(BASE_DIR, "fonts", "Tiny5.ttf"), 32)
+        # Пиксельный шрифт панели подсказок по Z: тот же Tiny5 (кириллица), но
+        # своим кеглем — панель читается крупно и в стиле остальных надписей
+        self.font_panel = pygame.font.Font(
+            os.path.join(BASE_DIR, "fonts", PANEL_FONT_FILE), PANEL_FONT_SIZE)
+        # Кэш полупрозрачных полос панели по высоте (см. GameLoop.panel_band)
+        self.panel_bands = {}
         # Заставка титульного экрана
         try:
             img = pygame.image.load(os.path.join(BASE_DIR, "screen", "6fin.png")).convert_alpha()
@@ -401,7 +408,11 @@ class GameLoad:
         self.par_back_idx = 0         # индекс активного заднего слоя в par_backs
         self.back_scale = 1.0    # относительная подстройка масштаба клавишами +/- (1.0 = как задано именем)
         self.isolate = ISOLATE_ON     # режим изоляции фона (Q): видны фон, персонаж и пол
-        self.hud_on = HUD_ON          # панель показателей внизу (Z — переключить)
+        self.hud_on = HUD_ON          # панель информации внизу (Z / Select — переключить)
+        # hud_anim — насколько панель уже выехала снизу вверх: 0 = уехала совсем,
+        # 1 = стоит на месте. Прокручивает update_hud_anim по настройке HUD_ANIM_FRAMES
+        self.hud_anim = 0.0
+        self.hud_h = HUD_H            # текущая высота панели (по числу строк)
         self.par_ok = False           # загрузились ли слои параллакса
         self.load_parallax()
         self.trans_active = False     # идёт ли переход к партии
@@ -721,8 +732,8 @@ class GameLoad:
 
 
     def set_floor(self, idx):
-        """Вариант пола переключается клавишей F. Уровень берётся из FLOOR_LEVEL
-        (верх части ключа), None — авто: по верхней сплошной поверхности картинки."""
+        """Вариант пола выбирается загрузкой (F больше не переключает). Уровень берётся из
+        FLOOR_LEVEL (верх части ключа), None — авто: по верхней сплошной поверхности."""
         if not self.floors:
             self.floor_idx = 0
             self.floor_name, self.floor_img, self.floor_row = "", None, 0

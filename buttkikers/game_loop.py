@@ -8,7 +8,29 @@ import pygame
 from .settings import *  # noqa: F401,F403
 from .anim import _scale_txt, move_frame_index, move_frame_thin
 from .entities import Enemy
-from .gamepad import init_gamepads, pad_menu, pad_trigger_left
+from .gamepad import current_pad_count, init_gamepads, pad_menu, pad_trigger_left, reopen_gamepads
+
+
+def pack_lines(items, font, max_w):
+    """Упаковывает список подсказок в строки шириной не больше max_w.
+
+    Одна длинная строка с управлением не влезала за экран, особенно когда
+    дописывалась раскладка геймпада. Поэтому подсказки идут списком, а строки
+    собираются по фактической ширине текста: шрифт и разрешение можно менять,
+    раскладка пересоберётся сама. Пункт шире max_w остаётся в строке один —
+    обрезать подсказку нельзя.
+    """
+    lines, cur = [], ""
+    for item in items:
+        probe = f"{cur}   {item}" if cur else item
+        if not cur or font.size(probe)[0] <= max_w:
+            cur = probe
+        else:
+            lines.append(cur)
+            cur = item
+    if cur:
+        lines.append(cur)
+    return lines
 
 
 class GameLoop:
@@ -42,12 +64,6 @@ class GameLoop:
                         self.cycle_backdrop(1, "E")
                     if event.key == pygame.K_p and self.state == "play":   # P — пауза музыки
                         self.toggle_music_pause()
-                    if event.key == pygame.K_f:               # F — смена варианта пола
-                        if len(self.floors) > 1:
-                            self.set_floor(self.floor_idx + 1)
-                            print(f"[DEBUG] F pressed, пол -> {self.floor_name}")
-                        else:
-                            print("[DEBUG] F pressed, других вариантов пола нет")
                     if event.key in (pygame.K_EQUALS, pygame.K_KP_PLUS):   # +/- — масштаб заднего фона
                         # Множитель поверх масштаба из имени файла/папки, а не абсолютное
                         # значение: иначе подстройка одного фона ломала бы все остальные.
@@ -88,11 +104,7 @@ class GameLoop:
                 if event.type in (pygame.JOYDEVICEADDED, pygame.JOYDEVICEREMOVED):
                     # геймпад подключили/отключили — переоткрываем список
                     pads = init_gamepads()
-                    self.pad_info = (f"ГЕЙМПАД: P1 — 1-й, P2 — 2-й ({len(pads)} подкл.)   "
-                                     "стик/крестовина   A — прыжок   X — кулак   "
-                                     "B — нога   Y — нога сильная   "
-                                     "LB/RB — фон вперёд   RT — назад   LT — изоляция фона   "
-                                     "Start — заставка") if pads else ""
+                    self.pad_connected = bool(pads)   # панель переключится на управление геймпадом
                     for i, js in enumerate(pads):
                         print(f"[DEBUG] геймпад P{i + 1}: {js.get_name()}")
                 if event.type == pygame.JOYBUTTONDOWN and self.state == "intro":
@@ -106,18 +118,30 @@ class GameLoop:
                                         pygame.K_SPACE, pygame.K_z)):
                     # Enter / Пробел / Z — то же, что кнопка геймпада: пропуск заставки
                     self.skip_intro(f"клавиша {pygame.key.name(event.key)}")
-                elif event.type == pygame.JOYBUTTONDOWN and self.state == "title" \
-                        and not self.trans_active and event.button in (0, 7, 8):
-                    # A / Start / Guide — начать игру с геймпада
+                elif (event.type == pygame.JOYBUTTONDOWN and self.state == "title"
+                      and not self.trans_active and event.button in (0, 7, PAD_BTN_START[0])):
+                    # A / Select / Start — начать игру с геймпада. Кнопки тыльной стороны
+                    # корпуса (8, 9, 10) в список не входят и игровых действий не имеют
                     self.play_sfx("start")
                     self.start_transition(self.mode_sel + 1)
                 elif event.type == pygame.JOYBUTTONDOWN and self.state == "play":
-                    # LB/RB — следующий задний фон, RT — предыдущий, LT — изоляция (Q).
+                    # Start (кнопка 6) — рестарт партии, так же, как R на клавиатуре.
+                    # Проверяем первым остальных: это единственное действие, которое
+                    # начинается с нуля, поэтому список кнопок с ним не должен совпадать.
+                    # Select (кнопка 7) — панель информации, так же, как Z на клавиатуре.
+                    # LB — предыдущий фон, RB — следующий фон, LT — панорама (Q).
                     # Срабатывает только при нажатии (JOYBUTTONDOWN), а не по удержанию,
                     # иначе фон перелистывался бы сам, пока кнопка зажата.
                     # Порядок важен: изоляцию проверяем первее листания — LT раньше
                     # числился в PAD_BTN_BG_PREV, и его нельзя оставлять в обоих списках.
-                    if event.button in PAD_BTN_ISOLATE:
+                    if event.button in PAD_BTN_START:
+                        print(f"[DEBUG] геймпад btn{event.button} (Start) — рестарт")
+                        self.reset()
+                    elif event.button in PAD_BTN_PANEL:
+                        self.hud_on = not self.hud_on
+                        print(f"[DEBUG] геймпад btn{event.button} (Select) — панель: "
+                              f"{'ВКЛ' if self.hud_on else 'ВЫХКЛ'}")
+                    elif event.button in PAD_BTN_ISOLATE:
                         self.toggle_isolate(f"геймпад btn{event.button}")
                     elif event.button in PAD_BTN_BG_NEXT:
                         self.cycle_backdrop(1, f"геймпад btn{event.button}")
@@ -130,11 +154,58 @@ class GameLoop:
             self.update_music()            # музыка: плавная громкость, пауза по P, перезапуск
             self.update_sfx_queue()         # отложенные звуки ударов (CHAR_SFX_DELAY_MS)
             self.update_pad_triggers()      # левый триггер — изоляция фона (ось, не кнопка)
+            self.update_pad_connection()   # перепроверка списка геймпадов раз в PAD_CHECK_FRAMES
+            self.update_hud_anim()         # панель информации выезжает снизу вверх
 
             self.draw()
             self.draw_transition()
             pygame.display.flip()
             self.clock.tick(FPS)
+
+
+    def update_pad_connection(self):
+        """Раз в PAD_CHECK_FRAMES кадров перечитывает список геймпадов.
+
+        Зачем: список открывается на старте игры и по событию JOYDEVICEADDED, но
+        событие приходит не всегда — пульт, подключённый или разбуженный уже после
+        старта, может его не дать. Тогда игра остаётся в режиме «клавиатура»,
+        и панель показывает клавиатурные подсказки, хотя пульт подключён (и наоборот).
+        Перепроверка раз в секунду стоит одного get_count() и чинит это само.
+
+        Две тонкости, из-за которых написано именно так:
+        - если список не изменился, ничего НЕ переоткрываем: get_numaxes() дёргает
+          драйвер, а пересоздание джойстика каждую секунду сбрасывает состояние
+          устройства (кнопки теряются, пульт заново «просыпается»);
+        - пульт засыпает по USB-энергосбережению и на пару секунд пропадает из
+          списка. Если переключать панель сразу, подсказки будут мигать
+          «клавиатура ↔ геймпад» прямо во время игры. Поэтому на исчезновение
+          ждём PAD_LOST_CHECKS неудачных проверок подряд, а появление считаем
+          сразу.
+        """
+        self.pad_check_t += 1
+        if self.pad_check_t < PAD_CHECK_FRAMES:
+            return
+        self.pad_check_t = 0
+        count = pygame.joystick.get_count()
+        if count == current_pad_count():
+            self.pad_missed = 0
+            return
+        if count == 0:
+            self.pad_missed += 1
+            if self.pad_missed < PAD_LOST_CHECKS:
+                return
+        else:
+            self.pad_missed = 0
+        was = self.pad_connected
+        pads = init_gamepads()
+        self.pad_connected = bool(pads)
+        if self.pad_connected == was:
+            return
+        if self.pad_connected:
+            for i, js in enumerate(pads):
+                print(f"[DEBUG] геймпад P{i + 1} появился: {js.get_name()}")
+        else:
+            print("[DEBUG] геймпад отключился — панель покажет клавиатуру")
 
 
     def update_pad_triggers(self):
@@ -390,13 +461,26 @@ class GameLoop:
                                  self.layer_y(self.parnew_img, PARNEW_H, self.parnew_pad))
 
         if self.isolate:
-            # Изоляция: чистый вид (фон + персонаж + пол), вместо HUD — панель с подсказкой
-            if self.hud_on:
-                top = HEIGHT - HUD_H
-                pygame.draw.rect(self.screen, BLACK, (0, top, WIDTH, HUD_H))
-                t = self.font_s.render("ИЗОЛЯЦИЯ ФОНА — Q (выйти)", True, YELLOW)
-                self.screen.blit(t, (WIDTH // 2 - t.get_width() // 2, top + 36))
-        elif self.hud_on:
+            # Панорамный режим: чистый вид (фон + персонаж + пол), вместо HUD —
+            # панель с названием режима. Панель выезжает так же, как обычная.
+            # Условие — только анимация (hud_anim > 0), а не hud_on: иначе при выключении
+            # панель исчезала бы мгновенно вместо того, чтобы уехать вниз
+            if self.hud_anim > 0.0:
+                slide = self.hud_slide(HUD_H)
+                top = HEIGHT - HUD_H + slide
+                self.panel_band(HUD_H, top)
+                step = self.font_panel.get_linesize()
+                y = top + (HUD_H - step * 2) // 2
+                t = self.font_panel.render("ПАНОРАМНЫЙ РЕЖИМ", True, YELLOW)
+                self.screen.blit(t, (WIDTH // 2 - t.get_width() // 2, y))
+                # Подсказка выхода — по тому, чем игра запущена: с геймпада LT,
+                # с клавиатуры Q (иначе с подключённым пультом писало бы Q - не туда)
+                q = self.font_panel.render(
+                    PANORAMA_EXIT_PAD if self.pad_connected else PANORAMA_EXIT_KEY, True, WHITE)
+                self.screen.blit(q, (WIDTH // 2 - q.get_width() // 2, y + step))
+        else:
+            # Панель рисуется всегда: скрытие отдано анимации (hud_anim → 0), поэтому
+            # при выключении она уезжает вниз, а не пропадает на месте
             self.draw_hud()
 
         # Экран победы/поражения
@@ -405,14 +489,14 @@ class GameLoop:
             t = self.font_big.render("LEVEL CLEAR!", True, YELLOW)
             self.screen.blit(t, (WIDTH // 2 - t.get_width() // 2, 180))
             if self.win_t > 20:
-                h = self.font_s.render("R — заново   Ctrl+R — перезапуск", True, WHITE)
+                h = self.font_panel.render("R - ЗАНОВО   CTRL+R - ПЕРЕЗАПУСК", True, WHITE)
                 self.screen.blit(h, (WIDTH // 2 - h.get_width() // 2, 240))
         elif self.state == "lose":
             self.lose_t += 1
             t = self.font_big.render("GAME OVER", True, RED)
             self.screen.blit(t, (WIDTH // 2 - t.get_width() // 2, 180))
             if self.lose_t > 20:
-                h = self.font_s.render("R — заново   Ctrl+R — перезапуск", True, WHITE)
+                h = self.font_panel.render("R - ЗАНОВО   CTRL+R - ПЕРЕЗАПУСК", True, WHITE)
                 self.screen.blit(h, (WIDTH // 2 - h.get_width() // 2, 240))
 
 
@@ -444,14 +528,17 @@ class GameLoop:
                 cy = sy + 7
                 self.screen.blit(self.choose_img, (WIDTH // 2 - self.choose_img.get_width() - 88, cy))
 
-        # Мигающая подсказка "ENTER — НАЧАТЬ"
+        # Мигающая подсказка запуска. С геймпадом игру начинает кнопка Start, поэтому
+        # пишем «НАЖМИТЕ СТАРТ», с клавиатуры — «НАЖМИТЕ ENTER» (иначе геймпадный игрок
+        # не видит, чем начать игру, а клавиатурный — не видит своей клавиши)
         if (self.frame // 15) % 2 == 0:
-            s = self.pixel_font_ru.render("ENTER — НАЧАТЬ", True, (137, 223, 255))
+            start_hint = "НАЖМИТЕ СТАРТ" if self.pad_connected else "НАЖМИТЕ ENTER"
+            s = self.pixel_font_ru.render(start_hint, True, (137, 223, 255))
             self.screen.blit(s, (WIDTH // 2 - s.get_width() // 2, 736))
 
         # Подсказка по навигации
         hint = self.pixel_font_ru.render(
-            "W/S или ↑/↓ — выбор   ESC — выход",
+            "W/S ИЛИ ↑/↓ - ВЫБОР   ESC - ВЫХОД",
             True, (180, 180, 190))
         self.screen.blit(hint, (WIDTH // 2 - hint.get_width() // 2, 816))
 
@@ -543,59 +630,96 @@ class GameLoop:
         self.screen.blit(img, (sx, sy))
 
 
+    def panel_band(self, height, y=None):
+        """Рисует чёрную полосу панели высотой height с прозрачностью PANEL_ALPHA.
+
+        Полоса полупрозрачная, поэтому сквозь неё видно игру — это же она делает
+        в панорамном режиме и в панели подсказок по Z. Поверхности кэшируются по
+        высоте: иначе на каждом кадре создавался бы новый Surface с альфой.
+        y — верх полосы; по умолчанию полоса прижата к низу кадра. Своё y нужно при
+        анимации появления, когда панель выезжает снизу вверх (см. update_hud_anim).
+        """
+        band = self.panel_bands.get(height)
+        if band is None:
+            band = pygame.Surface((WIDTH, height), pygame.SRCALPHA)
+            band.fill((0, 0, 0, PANEL_ALPHA))
+            self.panel_bands[height] = band
+        self.screen.blit(band, (0, HEIGHT - height if y is None else y))
+
+
+    def hud_slide(self, height):
+        """На сколько пикселей поднять панель при текущем состоянии анимации.
+
+        0 — панель у нижнего края (не видна за кадром, если сдвиг = height),
+        height — панель полностью на месте. Сдвиг считается от self.hud_anim (0..1),
+        который двигает update_hud_anim.
+        """
+        return int(round((1.0 - self.hud_anim) * height))
+
+    def update_hud_anim(self):
+        """Плавно выдвигает панель информации снизу вверх и убирает её вниз.
+
+        Состояние берётся из self.hud_on, поэтому переключатели (Z, Select, старт
+        уровня) менять ничего не должны — достаточно переключить hud_on. Скорость
+        задана в настройках: HUD_ANIM_FRAMES кадров на весь ход (больше — быстрее).
+        Пока панель полностью уехала (hud_anim == 0), она вообще не рисуется.
+        """
+        target = 1.0 if self.hud_on else 0.0
+        step = 1.0 / max(1, HUD_ANIM_FRAMES)
+        if self.hud_anim < target:
+            self.hud_anim = min(target, self.hud_anim + step)
+        elif self.hud_anim > target:
+            self.hud_anim = max(target, self.hud_anim - step)
+
     def draw_hud(self):
-        """Чёрная панель внизу кадра: здоровье, счёт, прогресс, подсказки, активные режимы."""
-        top = HEIGHT - HUD_H
-        pygame.draw.rect(self.screen, BLACK, (0, top, WIDTH, HUD_H))
-        xs = [10, 340]                 # позиции баров здоровья P1 и P2
-        for i, pl in enumerate(self.players):
-            base = xs[i]
-            hi = max(0, pl.hp)
-            c1 = GREEN if i == 0 else (110, 170, 255)
-            pygame.draw.rect(self.screen, GRAY, (base, top + 8, 200, 12))
-            pygame.draw.rect(self.screen, c1, (base, top + 8, 200 * hi / MAX_HP, 12))
-            t = self.font_s.render(f"P{i+1} {int(hi)}/{MAX_HP}", True, WHITE)
-            self.screen.blit(t, (base, top + 2))
+        """Панель информации: подсказка по управлению и текущий фон.
 
-        # Счёт
-        sc = self.font_m.render(f"SCORE {self.score}", True, YELLOW)
-        self.screen.blit(sc, (WIDTH // 2 - sc.get_width() // 2, top + 2))
+        Панель выезжает снизу вверх (см. update_hud_anim): текст и полоса рисуются
+        с одним и тем же сдвигом, поэтому при появлении они едут вместе. Пока панель
+        не выехала хотя бы на кадр — не рисуем ничего, иначе внизу кадра на миг
+        мелькала бы пустая полоса.
 
-        # Прогресс по уровню
-        prog = self.font_s.render("PROGRESS", True, GRAY)
-        self.screen.blit(prog, (WIDTH - 150, top + 2))
-        pygame.draw.rect(self.screen, GRAY, (WIDTH - 90, top + 8, 80, 10))
-        right = max(pl.x for pl in self.players)
-        frac = min(1, max(0, (right - 100) / (LEVEL_LEN - WIDTH)))
-        pygame.draw.rect(self.screen, YELLOW, (WIDTH - 90, top + 8, int(80 * frac), 10))
+        Больше ничего: здоровье, счёт, прогресс и отладочные режимы (масштаб,
+        пол, анимации) убраны — на панели осталось только то, что нужно при
+        настройке игры: как управлять и какой фон сейчас на экране.
 
-        # Подсказка управления (зависит от режима) — второй строкой панели, по центру
-        if self.num_players == 1:
-            hl = ("←→/AD — идти   ↑/W — прыжок  ↓/S — блок   J — кулак   K — нога   "
-                  "I — нога сильная   O — перекат   Z — панель   R — заново   "
-                  "Ctrl+R — перезапуск   ESC — выход")
+        Текст — пиксельным шрифтом font_panel (Tiny5, кегль из настроек),
+        капсом: строки собираются по ширине панели функцией pack_lines, одна
+        длинная строка не влезала за края кадра.
+        """
+        if self.hud_anim <= 0.0:
+            return
+        if self.pad_connected:
+            # Запустились с геймпада — на панели только геймпад. Служебные клавиши
+            # (KEY_SYS) сюда НЕ добавляются: они описывают то, чего на геймпаде нет,
+            # и в геймпадной подсказке выглядели как обрывок клавиатурной
+            items = ["УПРАВЛЕНИЕ", *PAD_HELP]
+            bg_hint = "LB/RB"
         else:
-            hl = ("P1: A/D·W·S·J/K/I·O     P2: ←→·↑·↓·N/B/M     Z — панель   R — заново   "
-                  "Ctrl+R — перезапуск   ESC — выход")
-        if self.pad_info:                 # геймпад подключён — дописываем его раскладку
-            hl += f"     |  {self.pad_info}"
-        hint = self.font_s.render(hl, True, WHITE)
-        self.screen.blit(hint, (WIDTH // 2 - hint.get_width() // 2, top + 30))
+            # Запустились с клавиатуры. Блока в игре нет (анимации блока пока нет),
+            # поэтому ↓/S в подсказку не вносим. Служебные клавиши — свои, геймпадных
+            # кнопок для них здесь нет
+            items = ["УПРАВЛЕНИЕ", *(KEY_HELP_1P if self.num_players == 1 else KEY_HELP_2P),
+                     *KEY_SYS]
+            bg_hint = "E"
+        font = self.font_panel
+        lines = pack_lines(items, font, WIDTH - 2 * PANEL_PAD)
+        if self.par_back_name:            # текущий фон — последней строкой, жёлтым
+            lines.append(f"ФОН: {self.par_back_name} ({bg_hint})")
 
-        # Активные режимы (фон, масштаб, пол, прыжок) — третьей строкой панели, по центру
-        if self.par_back_name:
-            jump_info = (f"   ПРЫЖОК: {self.jump_name} ({MOVE_ANIM_JUMP_FPS} fps, "
-                         f"{JUMP_LEN}px, размер {_scale_txt(SPRITE_SCALE.get('jump'))})") if self.jump_frames else ""
-            idle_info = f"   ПОКОЙ: {self.idle_name} ({IDLE_ANIM_FPS} fps)" if self.idle_frames else ""
-            sit_info = f"   ПРИСЕД: {self.sit_name} ({SIT_ANIM_FPS} fps)" if self.sit_frames else ""
-            punch_info = f"   УДАР: {self.punch_name}" if self.punch_frames else ""
-            kik_info = f"   НОГА: {self.kik_name}" if self.kik_frames else ""
-            mma_info = f"   НОГА СИЛЬН.: {self.mma_name}" if self.mma_frames else ""
-            bn = self.font_s.render(
-                f"ФОН: {self.par_back_name} (E)   МАСШТАБ: "
-                f"{getattr(self, 'back_eff_scale', self.back_scale):.2f} (+/-)"
-                f"   ДВИЖЕНИЕ: {MOVE_ANIM_FPS} fps, {_scale_txt(SPRITE_SCALE.get('run'))}"
-                f"   ПОЛ: {self.floor_name} (F){jump_info}{idle_info}{sit_info}{punch_info}"
-                f"{kik_info}{mma_info}",
-                True, YELLOW)
-            self.screen.blit(bn, (WIDTH // 2 - bn.get_width() // 2, top + 52))
+        # Панель растёт под содержимое: HUD_H — минимальная высота, а если строк
+        # больше (длинное имя фона, геймпадная раскладка) — берём по факту,
+        # иначе нижние строки уезжали бы за край экрана
+        step = font.get_linesize()
+        self.hud_h = max(HUD_H, len(lines) * step + 8)
+        slide = self.hud_slide(self.hud_h)
+        if slide >= self.hud_h:
+            return                       # панель ещё целиком за нижним краем кадра
+        top = HEIGHT - self.hud_h + slide
+        self.panel_band(self.hud_h, top)
+        y = top + max(4, (self.hud_h - step * len(lines)) // 2)
+        for line in lines:
+            color = YELLOW if line.startswith("ФОН:") else WHITE
+            t = font.render(line, True, color)
+            self.screen.blit(t, (WIDTH // 2 - t.get_width() // 2, y))
+            y += step
