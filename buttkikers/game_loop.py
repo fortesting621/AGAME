@@ -6,7 +6,7 @@ import sys
 import pygame
 
 from .settings import *  # noqa: F401,F403
-from .anim import _scale_txt, move_frame_index, move_frame_thin
+from .anim import _scale_txt, enemy_dead_time, move_frame_index, move_frame_thin
 from .entities import Enemy
 from .gamepad import current_pad_count, init_gamepads, pad_menu, pad_trigger_left, reopen_gamepads
 
@@ -306,26 +306,22 @@ class GameLoop:
         # Спавн врагов по мере продвижения игрока
         if self.state == "play" and not NO_ENEMIES:
             while self.spawn_idx < len(self.spawn_points):
-                sx, kind = self.spawn_points[self.spawn_idx]
+                sx = self.spawn_points[self.spawn_idx]
                 if rightmost + WIDTH >= sx:
                     left = sx < self.cam
                     ex = sx - 200 if left else sx        # если точка позади камеры — отодвигаем вперёд
-                    self.enemies.append(Enemy(max(50, ex), kind))
+                    self.enemies.append(Enemy(max(50, ex)))
                     self.spawn_idx += 1
                 else:
                     break
-
-            if not self.boss_spawned and rightmost > 4800:
-                self.boss_spawned = True                 # босс в конце уровня
-                self.enemies.append(Enemy(max(50, 5200), "boss"))
 
         # Поведение врагов + удаление трупов
         if not NO_ENEMIES:
             for e in self.enemies[:]:
                 if e.dead:
                     e.update(self.cam, self.frame)
-                    if e.dead_timer > 60:
-                        self.enemies.remove(e)           # труп убран через 60 кадров
+                    if e.dead_timer > enemy_dead_time():
+                        self.enemies.remove(e)           # труп убран после проигрывания анимации
                     continue
                 target = alive[0] if alive else players[0]
                 e.ai_update(target, self.cam, self.frame)
@@ -428,11 +424,10 @@ class GameLoop:
             self.draw_loop_image(self.par2, int(cam * PAR2_PARALLAX),
                                  self.layer_y(self.par2, PAR2_H, self.par2_pad))
 
-        # Враги (в изоляции скрыты)
+        # Враги (в изоляции скрыты). Видов нет — у всех один ранг отрисовки.
         if not NO_ENEMIES and not self.isolate:
-            scale_rank = {"thug": 3, "bruiser": 4, "boss": 5}
             for e in self.enemies:
-                self.draw_fighter(e, cam, e.kind, rank=scale_rank[e.kind])
+                self.draw_fighter(e, cam, e.kind, rank=3)
 
         # Слой 1 (объекты из PAR1_DIR): за персонажем, скорость PAR1_PARALLAX.
         # Базовая линия слоя — общая LAYERS_Y, верх полосы — LAYERS_Y - PAR1_H.
@@ -553,23 +548,34 @@ class GameLoop:
         state = "idle"               # имя состояния для SPRITE_OFFSET и SPRITE_SCALE
         if y < -20 or x < -100 or x > WIDTH + 100:
             return                     # персонаж вне экрана — не рисуем
+        # Враг рисуется ТОЛЬКО своими спрайтами из ENEMY_WALK_DIR (sprites/enemies) —
+        # спрайты игрока ему не подставляются никогда. Состояние выбирается как обычно,
+        # но кадр берётся из enemy_frames; если своего файла для состояния нет, показывается
+        # первый кадр ходьбы (поза покоя), а не спрайт игрока.
+        is_enemy = (variant != "player")
+        ef = (getattr(self, "enemy_frames", None) or {}) if is_enemy else {}
+        if is_enemy:
+            return self.draw_enemy(f, x, y, variant, rank, ef)
         if getattr(f, "dead", False) or not self.run_frames:
-            return                     # мёртвых и без спрайтов не рисуем
-        if f.attack == "punch" and self.punch_frames:
+            return                     # мёртвых игроков и без спрайтов не рисуем
+        frames_punch = self.punch_frames
+        frames_kik = self.kik_frames
+        frames_mma = self.mma_frames
+        if f.attack == "punch" and frames_punch:
             # Удар рукой: кадр анимации по прогрессу атаки. Номер кадра считает Fighter
             # через attack_progress, чтобы не тянуть лишние счётчики.
-            idx = int(f.attack_progress * len(self.punch_frames))
-            frame = self.punch_frames[min(max(0, idx), len(self.punch_frames) - 1)]
+            idx = int(f.attack_progress * len(frames_punch))
+            frame = frames_punch[min(max(0, idx), len(frames_punch) - 1)]
             state = "punch"
-        elif f.attack == "kik" and self.kik_frames:
+        elif f.attack == "kik" and frames_kik:
             # Обычный удар ногой: своя анимация kik.png, кадр так же по прогрессу атаки.
-            idx = int(f.attack_progress * len(self.kik_frames))
-            frame = self.kik_frames[min(max(0, idx), len(self.kik_frames) - 1)]
+            idx = int(f.attack_progress * len(frames_kik))
+            frame = frames_kik[min(max(0, idx), len(frames_kik) - 1)]
             state = "kik"
-        elif f.attack == "kick" and self.mma_frames:
+        elif f.attack == "kick" and frames_mma:
             # Удар ногой: своя анимация, кадр так же по прогрессу атаки.
-            idx = int(f.attack_progress * len(self.mma_frames))
-            frame = self.mma_frames[min(max(0, idx), len(self.mma_frames) - 1)]
+            idx = int(f.attack_progress * len(frames_mma))
+            frame = frames_mma[min(max(0, idx), len(frames_mma) - 1)]
             state = "mma"
         elif getattr(f, "rolling", False) and self.roll_frames:
             # Перекат: кадр по времени (f.roll_frame считает Fighter от ROLL_ANIM_FPS).
@@ -612,21 +618,114 @@ class GameLoop:
         else:
             frame = self.run_frames[0]
             state = "run"
-        ox, oy, by_facing = SPRITE_OFFSET.get(state, (0, 0, False))
-        dx = ox * f.facing if by_facing else ox
+        self.blit_fighter(f, x, y, frame, state, is_player=True)
+
+
+    def draw_enemy(self, f, x, y, variant, rank, ef):
+        """Отрисовка ВРАГА — только спрайтами из папки sprites/enemies.
+
+        Спрайты игрока врагу не подставляются. Состояние (удар, прыжок, перекат...) берётся
+        из логики Fighter, но кадр ищется только в ef — словаре своих анимаций врага. Если
+        для состояния своего файла нет, рисуется первый кадр ходьбы (поза покоя), чтобы
+        враг не исчезал и не показывал чужой спрайт.
+        """
+        if not ef:
+            return                         # папка врагов пуста/не загрузилась — нечего рисовать
+        stand = ef.get("erun") or next(iter(ef.values()))
+        if f.dead:
+            # Смерть: спрайт падения проигрывается по времени, пока труп не уберут
+            # (Fighter.update ведёт dead_timer). Без своего файла смерти враг исчезает.
+            frames = ef.get("death")
+            if not frames:
+                return
+            # Кадр считается от dead_timer — времени С МОМЕНТА СМЕРТИ этого врага, а не от
+            # общего self.frame: по self.frame анимация начиналась бы со случайного места
+            # (зависела от того, в какой кадр игры враг умер) и выглядела бы неправильно.
+            # move_frame_index здесь не годится — он ЦИКЛИЧЕСКИЙ и прореживает кадры под
+            # MOVE_SRC_FPS, а смерть одноразовая и должна показывать каждый кадр.
+            # После последнего кадра держим последний (труп лежит), а не начинаем заново.
+            tick = int(getattr(f, "dead_timer", 0) * ENEMY_DEATH_ANIM_FPS / FPS)
+            idx = min(tick, len(frames) - 1)
+            self.blit_fighter(f, x, y, frames[max(0, idx)], "death", is_player=False)
+            return
+        state = None
+        frame = None
+        if f.attack in ("punch", "kik", "kick"):
+            # Удар: у каждого вида удара своё состояние. Кадр — по прогрессу атаки, который
+            # считает Fighter через attack_progress (без лишних счётчиков).
+            state = {"kick": "mma"}.get(f.attack, f.attack)
+            frames = ef.get(state)
+            if frames:
+                idx = int(f.attack_progress * len(frames))
+                frame = frames[min(max(0, idx), len(frames) - 1)]
+        if frame is None and getattr(f, "rolling", False) and ef.get("roll"):
+            frame = ef["roll"][min(max(0, getattr(f, "roll_frame", 0)), len(ef["roll"]) - 1)]
+            state = "roll"
+        if frame is None and f.jumping and ef.get("jump"):
+            frame = ef["jump"][min(max(0, getattr(f, "jump_frame", 0)), len(ef["jump"]) - 1)]
+            state = "jump"
+        if frame is None and getattr(f, "crouch_walking", False) and ef.get("crwalk"):
+            frames = ef["crwalk"]
+            frame = frames[move_frame_index(self.frame, f.run_phase, len(frames))]
+            state = "crwalk"
+        if frame is None and (f.crouching or getattr(f, "sit_dir", 0) != 0) and ef.get("sit"):
+            frames = ef["sit"]
+            sit_n = len(frames)
+            sit_t = max(0, getattr(f, "sit_t", 0))
+            sit_fps = float(MOVE_ANIM_FPS) / max(0.1, float(SIT_SPEED_MUL))
+            frame = frames[move_frame_thin(sit_t / float(max(1, sit_n - 1)), sit_n, sit_fps)]
+            state = "sit"
+        if frame is None:
+            # Ходьба врага: в движении — цикл со своим сдвигом фазы (f.run_phase), чтобы
+            # враги не шли в унисон; стоя — первый кадр (поза покоя).
+            state = "erun"
+            frames = ef.get("erun") or stand
+            if f.was_moving:
+                fps = ENEMY_ANIM_FPS.get("erun", ENEMY_WALK_ANIM_FPS)
+                frame = frames[move_frame_index(self.frame, f.run_phase, len(frames), fps)]
+            else:
+                frame = frames[0]
+        self.blit_fighter(f, x, y, frame, state, is_player=False)
+
+
+    def blit_fighter(self, f, x, y, frame, state, is_player):
+        """Масштабирует и рисует кадр бойца. is_player выбирает таблицу настроек.
+
+        Смещение и масштаб — свои у игрока (SPRITE_OFFSET / SPRITE_SCALE) и свои у врага
+        (ENEMY_SPRITE_OFFSET / ENEMY_SPRITE_SCALE): правка врага не задевает игрока.
+        """
+        if frame is None:
+            return
+        off_tbl = SPRITE_OFFSET if is_player else ENEMY_SPRITE_OFFSET
+        sc_tbl = SPRITE_SCALE if is_player else ENEMY_SPRITE_SCALE
+        # Сдвиг X симметричный — всегда отсчитывается по направлению взгляда: при повороте
+        # влево смещение меняет знак, и боец со спрайтом остаются на одном расстоянии.
+        ox, oy = off_tbl.get(state, (0, 0))
+        dx = ox * f.facing
         dy = oy
-        # Масштаб спрайта — свой для каждой анимации (SPRITE_SCALE). Число — на обе оси,
-        # пара (X, Y) — по одной каждой.
-        sc = SPRITE_SCALE.get(state, 1.0)
+        # Число — множитель на обе оси, пара (X, Y) — по одной каждой.
+        sc = sc_tbl.get(state, 1.0)
         sx_mul, sy_mul = sc if isinstance(sc, (tuple, list)) else (sc, sc)
         base_h = CHAR_SPRITE_H * f.scale * CHAR_SPRITE_SCALE   # базовая высота бойца на экране
-        th = max(1, int(base_h * sy_mul))                      # высота спрайта на экране
-        tw = max(1, int(frame.get_width() * base_h * sx_mul / frame.get_height()))
+        # Размер считается по СОДЕРЖИМОМУ кадра, а не по кадру целиком: у спрайтов вокруг
+        # бойца пустые прозрачные поля (у walk.png кадр шире бойца почти вдвое), поэтому
+        # при масштабировании по кадре боец выходил бы на экране меньше своего спрайта,
+        # и переход «иду -> бью» скакал бы по высоте. Множитель ENEMY_STATE_FIT приводит
+        # каждое состояние врага к высоте его ходьбы; у игрока он равен 1.0 — его спрайты
+        # отмасштабированы так, как заведено (SPRITE_SCALE).
+        fit = 1.0 if is_player else ENEMY_STATE_FIT.get(state, 1.0)
+        # Итоговый множитель по каждой оси: своя настройка состояния × подгонка по
+        # содержимому. Их порядок не важен — оба множителя входят произведением.
+        mul_x, mul_y = sx_mul * fit, sy_mul * fit
+        th = max(1, int(base_h * mul_y))                      # высота спрайта на экране
+        # Ширина идёт от пропорций кадра: спрайт не должен искажаться, поэтому своя
+        # настройка по X множит ту же высоту, а не задаёт ширину напрямую.
+        tw = max(1, int(frame.get_width() * base_h * mul_x / frame.get_height()))
         img = pygame.transform.scale(frame, (tw, th))
         if f.facing < 0:
             img = pygame.transform.flip(img, True, False)
-        sx = x + (f.w - tw) // 2 + dx  # центрируем по хитбоксу + сдвиг из SPRITE_OFFSET
-        sy = y + f.h - th + dy   # низ спрайта + сдвиг Y из SPRITE_OFFSET
+        sx = x + (f.w - tw) // 2 + dx  # центрируем по хитбоксу + сдвиг из настроек
+        sy = y + f.h - th + dy   # низ спрайта + сдвиг Y из настроек
         self.screen.blit(img, (sx, sy))
 
 

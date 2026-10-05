@@ -52,12 +52,10 @@ class GameFlow:
         self.state = "title"           # состояния: title / play / win / lose
         self.score = 0
         self.enemies = []
-        self.boss_spawned = False
-        # Точки и типы врагов по мере продвижения (включённые только если НЕ NO_ENEMIES)
-        self.spawn_points = [(600, "thug"), (950, "thug"), (1500, "bruiser"),
-                             (1900, "thug"), (2400, "bruiser"), (2900, "thug"),
-                             (3100, "thug"), (3700, "bruiser"), (4200, "thug"),
-                             (5000, "bruiser")]
+        # Точки появления врагов по мере продвижения (включённые только если НЕ NO_ENEMIES).
+        # Видов и уровней нет — все враги одинаковые, поэтому в точке только X.
+        self.spawn_points = [600, 950, 1500, 1900, 2400, 2900,
+                             3100, 3700, 4200, 5000]
         self.spawn_idx = 0
         self.win_t = 0                 # таймер экрана победы
         self.lose_t = 0                # таймер экрана поражения

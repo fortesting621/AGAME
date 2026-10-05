@@ -59,7 +59,24 @@ def move_shown(total, fps=0):
     return max(1, min(total, int(round(total * rate / float(MOVE_SRC_FPS)))))
 
 
-def move_frame_index(game_frame, phase, total):
+def enemy_dead_time(frames_n=0):
+    """Сколько кадров игры лежит труп врага — возвращает ENEMY_DEAD_TIME.
+
+    При ENEMY_DEAD_TIME = 0 длительность считается автоматически из загруженного
+    death.png: n / ENEMY_DEATH_ANIM_FPS секунд на саму анимацию плюс ENEMY_DEAD_LIE_TIME
+    секунд лежащего трупа. Без этого труп убирался на середине анимации — из ENEMY_DEAD_TIME,
+    заданного вручную, не известно, сколько кадров в файле, и падение обрывалось.
+    """
+    if settings.ENEMY_DEAD_TIME > 0:
+        return int(settings.ENEMY_DEAD_TIME)
+    n = int(frames_n or settings.ENEMY_DEATH_ANIM_N)
+    if n <= 0:
+        return max(1, int(round(FPS * 1.0)))     # анимации смерти нет — труп лежит секунду
+    anim_sec = n / float(max(1, settings.ENEMY_DEATH_ANIM_FPS))
+    return max(1, int(round((anim_sec + settings.ENEMY_DEAD_LIE_TIME) * FPS)))
+
+
+def move_frame_index(game_frame, phase, total, fps=0):
     """Номер кадра ЦИКЛИЧЕСКОЙ анимации движения: бег, крадущаяся ходьба, покой.
 
     Позиция считается в показах, а не в кадрах анимации: счётчик обновлений идёт со скоростью
@@ -67,11 +84,15 @@ def move_frame_index(game_frame, phase, total):
     выводится только move_shown(total) кадров из total. Цикл поэтому занимает те же
     total / MOVE_SRC_FPS секунд — меняется только частота обновления. phase — сдвиг фазы в
     кадрах исходной анимации (у каждого игрока свой, чтобы не шли в унисон).
+
+    fps = 0 -> общая частота MOVE_ANIM_FPS; ходьба врага передаёт свою (ENEMY_WALK_ANIM_FPS),
+    поэтому её анимация обновляется со своей частотой и не обязана совпадать с бегом игрока.
     """
-    shown = move_shown(total)
+    shown = move_shown(total, fps)
     if shown <= 0:
         return 0
-    tick = int(game_frame * float(MOVE_ANIM_FPS) / FPS)   # счётчик обновлений анимации
+    rate = float(fps) if fps else float(MOVE_ANIM_FPS)    # частота этой анимации
+    tick = int(game_frame * rate / FPS)                   # счётчик обновлений анимации
     pos = (tick + phase * shown // total) % shown          # позиция в цикле
     return int(round(pos * total / float(shown))) % total  # кадр анимации для этой позиции
 

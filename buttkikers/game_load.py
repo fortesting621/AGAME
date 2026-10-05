@@ -378,6 +378,64 @@ class GameLoad:
         else:
             print("[DEBUG] удар ногой (обычный): анимация не найдена, длительность удара "
                   f"{KICK_FALLBACK} кадр")
+        # Анимации ВРАГА из папки ENEMY_WALK_DIR. Каждая ищется ПО ИМЕНИ (ENEMY_ANIM_FILES),
+        # а не «первый .png по алфавиту»: иначе punch.png, вставленный в папку, встал бы
+        # перед walk.png и враг пошёл бы с анимацией удара. Имя файла настраивается в
+        # settings.py, порядок файлов на диске значения не имеет.
+        # Состояния без своего файла (kik, mma, jump) берутся из анимаций игрока — см. src
+        # ниже. Если файла нет или кадров в нём нет, соответствующий список пустой, и
+        # враг рисуется спрайтом игрока (как было раньше).
+        self.enemy_walk_frames = []
+        self.enemy_walk_name = ""
+        self.enemy_frames = {}          # state -> кадры СВОЕЙ анимации врага (если есть)
+        edir = ""
+        if ENEMY_WALK_DIR:
+            edir = os.path.join(base, *ENEMY_WALK_DIR.replace("\\", "/").split("/"))
+        # Порядок по ENEMY_ANIM_FILES (состояния), в каждом — имя файла; если файла нет,
+        # берётся первый одноимённый по префиксу (например "punch2.png" для "punch").
+        eentries = []
+        if os.path.isdir(edir):
+            eentries = sorted((self.prefix_order(name), name, os.path.join(edir, name))
+                              for name in os.listdir(edir) if name.lower().endswith(".png"))
+        for state, fname in ENEMY_ANIM_FILES.items():
+            stem = os.path.splitext(fname)[0]
+            got = []
+            for order, name, full in eentries:
+                if os.path.splitext(name)[0].lower() == stem.lower():
+                    got = self.trim_frames(self.load_apng_frames(full))
+                    if got:
+                        self.enemy_frames[state] = got
+                        if state == "erun":
+                            self.enemy_walk_name, self.enemy_walk_frames = name, got
+                    break
+            label = f"{state}: {fname}"
+            print(f"[DEBUG] анимация врага {label} — "
+                  + (f"{len(got)} кадров" if got else "не найдена, спрайт игрока"))
+        settings.ENEMY_WALK_ANIM_N = len(self.enemy_walk_frames)
+        settings.ENEMY_DEATH_ANIM_N = len(self.enemy_frames.get("death") or ())
+        # Размер врага — по содержимому спрайта, а не по кадру. Кадр шире бойца почти
+        # вдвое (walk.png: 236x170, боец 113x151), поэтому при масштабировании по кадру
+        # враг выходил на экране меньше своего спрайта, а удары и прыжок меняли размер на
+        # ходу. Множители ENEMY_STATE_FIT приводят каждое состояние врага к высоте ходьбы.
+        # Заимствованные кадры игрока подставляются в src, свои — в enemy_frames.
+        self.enemy_fill = {}
+        if self.enemy_walk_frames:
+            walk_fh, walk_fw = self.anim_fill(self.enemy_walk_frames)
+            self.enemy_fill["erun"] = (walk_fh, walk_fw)
+            # Множители считаются ТОЛЬКО по своим анимациям врага: спрайты игрока врагу
+            # не подставляются, поэтому состояния без своего файла (kik, mma, jump) в
+            # ENEMY_STATE_FIT не попадают — для них фита нет, а рисуется поза покоя.
+            settings.ENEMY_STATE_FIT = {}
+            for state, frames in self.enemy_frames.items():
+                st_fh, st_fw = self.anim_fill(frames)
+                # Высота приводится к высоте ходьбы, ширина — с тем же коэффициентом,
+                # иначе пропорции бойца в ударе отличались бы от ходьбы.
+                fit = walk_fh / st_fh if st_fh > 0 else 1.0
+                self.enemy_fill[state] = (st_fh, st_fw)
+                settings.ENEMY_STATE_FIT[state] = fit
+            fit_txt = ", ".join(f"{k}={v:.2f}" for k, v in settings.ENEMY_STATE_FIT.items())
+            print(f"[DEBUG] размер врага: заполнение кадра ходьбы {walk_fh:.0%} по высоте, "
+                  f"{walk_fw:.0%} по ширине; подгонка кадров удара/прыжка: {fit_txt or '—'}")
         dur = jump_duration()
         spd = JUMP_LEN / dur if dur else 0
         print(f"[DEBUG] прыжок: длина {JUMP_LEN} px, анимация {JUMP_ANIM_FPS} fps -> "
@@ -482,6 +540,37 @@ class GameLoad:
             out.append(im.subsurface(pygame.Rect(px, px, w - 2 * px, h - 2 * px)).copy())
         return out
 
+
+    @staticmethod
+    def anim_fill(frames):
+        """(доля высоты, доля ширины) кадра, занятая персонажем, 0..1.
+
+        Считается по ОБЩЕМУ прямоугольнику всех кадров, а не по каждому отдельно: тогда
+        взаимное положение персонажа внутри анимации (его качание, выпад вперёд) не
+        меняется и соседние кадры не «прыгают». Один общий прямоугольник — это и есть
+        размер спрайта по содержимому, без пустых прозрачных полей.
+
+        Нужен, чтобы масштабировать по персонажу, а не по пустому кадру. У walk.png
+        персонаж занимает 113x151 из 236x170, то есть по ширине меньше половины кадра:
+        при масштабировании по кадру враг выходил на экране заметно меньше своего спрайта.
+        Пустой список или пустые кадры — (1.0, 1.0), то есть масштаб как есть.
+        """
+        if not frames:
+            return (1.0, 1.0)
+        fw, fh = frames[0].get_size()
+        union = None
+        for im in frames:
+            try:
+                box = im.get_bounding_rect()   # непрозрачная часть Surface с альфой
+            except pygame.error:
+                continue
+            if box.width <= 0 or box.height <= 0:
+                continue
+            union = box.copy() if union is None else union.union(box)
+        if union is None or fw <= 0 or fh <= 0:
+            return (1.0, 1.0)
+        return (max(0.05, min(1.0, union.height / float(fh))),
+                max(0.05, min(1.0, union.width / float(fw))))
 
     @staticmethod
     def has_black_border(im):

@@ -507,27 +507,32 @@ class Player(Fighter):
 
 
 class Enemy(Fighter):
-    """Враг с простым ИИ. Виды: thug (громила), bruiser (бризер/брузер), boss (AXIS)."""
+    """Враг с простым ИИ. Видов и уровней нет — все враги одинаковые.
 
-    def __init__(self, x, kind):
+    Параметр kind оставлен только для совместимости с вызовом из кода спавна: на
+    характеристики врага он больше не влияет. Все берутся из настроек ENEMY_*.
+    """
+
+    def __init__(self, x, kind=None):
         self.kind = kind
-        if kind == "thug":
-            super().__init__(x, 45, THUG, "THUG")
-            self.speed = 2.2           # скорость погони
-            self.attack_range = 70     # дистанция начала атаки
-        elif kind == "bruiser":
-            super().__init__(x, 80, BRUISER, "BRUTE")
-            self.scale = 1.2           # крупнее обычного
-            self.speed = 1.5
-            self.attack_range = 80
-        else:                          # boss — большой и прочный
-            super().__init__(x, 180, BOSS, "AXIS")
-            self.scale = 1.6
-            self.speed = 0.9
-            self.attack_range = 110
+        # Размер, здоровье, скорость и дальность атаки — общие для всех врагов
+        # (ENEMY_SCALE / ENEMY_HP / ENEMY_SPEED / ENEMY_ATTACK_RANGE). Раньше виды
+        # отличались друг от друга, но разных врагов в игре больше нет.
+        super().__init__(x, ENEMY_HP if ENEMY_HP is not None else 45, THUG, "THUG",
+                         scale=ENEMY_SCALE)
+        self.speed = ENEMY_SPEED           # скорость погони
+        self.attack_range = ENEMY_ATTACK_RANGE   # дистанция начала атаки
         self.now_blocking = False
         self.hp = int(self.hp * self.scale)   # здоровье растёт с размером
+        # ENEMY_HP, если задан, заменяет здоровье у всех видов: так враг сразу становится
+        # безобидным (ENEMY_HP = 1 — падает от любого удара). None — своё у каждого вида.
+        if ENEMY_HP is not None:
+            self.hp = int(ENEMY_HP)
         self.max_hp = self.hp
+        # Сдвиг фазы ходьбы: у каждого врага свой, иначе вся толпа шагала бы в унисон.
+        # run_phase при этом пересчитывается при приземлении (Fighter.update), поэтому
+        # после прыжка фаза снова станет 0 — это заметно только на кадрах прыжка.
+        self.run_phase = random.randrange(0, 12)
 
     def ai_update(self, player, cam, frame):
         """Простой ИИ: приблизиться, встать в радиус атаки и бить/прыгать."""
