@@ -1,0 +1,50 @@
+# Сборка macOS: PyInstaller не умеет кросс-компиляцию, поэтому .app собирается
+# на runner'е с macOS (macos-latest, Apple Silicon). С Windows мак-версию не собрать.
+#
+# Результат — артефакт ButtKIkersUnited-macOS с бандлом .app внутри.
+# Запуск локально: download артефакта → распаковать → open ButtKIkersUnited.app
+name: Сборка macOS
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:            # ручной запуск из вкладки Actions
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    name: Сборка .app
+    runs-on: macos-latest
+
+    steps:
+      - name: Клонировать репозиторий
+        uses: actions/checkout@v4
+
+      - name: Python 3.14
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+          cache: pip
+
+      - name: Зависимости
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller
+
+      - name: Сборка
+        run: python build_exe.py
+
+      - name: Проверка результата
+        run: |
+          test -d "build/ButtKIkersUnited.app" || { echo "бандл .app не создан"; exit 1; }
+          du -sh "build/ButtKIkersUnited.app"
+
+      - name: Загрузить артефакт
+        uses: actions/upload-artifact@v4
+        with:
+          name: ButtKIkersUnited-macOS
+          path: build/ButtKIkersUnited.app
+          if-no-files-found: error
+          retention-days: 14

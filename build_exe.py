@@ -20,6 +20,10 @@ buttkikers.game; сам код игры PyInstaller подтянет сам по
 
 Путь к ресурсам игра берёт из sys._MEIPASS (см. BASE_DIR в buttkikers/settings.py) —
 поэтому игру можно запускать откуда угодно, exe не обязан лежать в папке AGAME.
+
+macOS: тот же скрипт работает и на Mac — PyInstaller на darwin отдаёт не папку
+с .exe, а бандл build/ButtKIkersUnited.app. Кросс-сборки нет: на Windows мак-версию
+не собрать, нужен сам Mac (или runner в GitHub Actions).
 """
 import os
 import shutil
@@ -91,20 +95,35 @@ def main():
         print(f"\nСборка не удалась, код {code}")
         return code
 
-    out_dir = os.path.join(BUILD_DIR, OUT_NAME)
-    exe = os.path.join(out_dir, OUT_NAME + ".exe")
-    if not os.path.exists(exe):
-        print(f"\nГотовый exe не найден: {exe}")
+    # Куда PyInstaller положил результат. Windows/Linux — папка с бинарником внутри,
+    # macOS (onedir + windowed) — сам бандл .app прямо в distpath.
+    if sys.platform == "darwin":
+        candidates = [os.path.join(BUILD_DIR, OUT_NAME + ".app"),
+                      os.path.join(BUILD_DIR, OUT_NAME, OUT_NAME + ".app")]
+    else:
+        candidates = [os.path.join(BUILD_DIR, OUT_NAME, OUT_NAME + ".exe")]
+    out_path = next((p for p in candidates if os.path.exists(p)), None)
+    if out_path is None:
+        print("\nГотовый файл не найден, проверял:")
+        for p in candidates:
+            print(f"  {p}")
         return 1
 
     size = 0
-    for root, _, files in os.walk(out_dir):
+    for root, _, files in os.walk(out_path):
         for fn in files:
             size += os.path.getsize(os.path.join(root, fn))
     print("\n" + "=" * 60)
-    print(f"Готово: {exe}")
-    print(f"Вся папка: {size / (1024 * 1024):.1f} МБ")
-    print(f"Скопируй папку {OUT_NAME} на другой компьютер и запусти {OUT_NAME}.exe")
+    if sys.platform == "darwin":
+        print(f"Готово: {out_path}")
+        print(f"Бандл: {size / (1024 * 1024):.1f} МБ")
+        print("Проверь запуском: open " + out_path)
+        print("Для раздачи другим нужна подпись (код-сигнатура + нотаризация),")
+        print("иначе Gatekeeper скажет «приложение повреждено».")
+    else:
+        print(f"Готово: {out_path}")
+        print(f"Вся папка: {size / (1024 * 1024):.1f} МБ")
+        print(f"Скопируй папку {OUT_NAME} на другой компьютер и запусти {OUT_NAME}.exe")
     print("=" * 60)
     return 0
 
