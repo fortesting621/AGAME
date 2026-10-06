@@ -1,8 +1,13 @@
 # Сборка macOS: PyInstaller не умеет кросс-компиляцию, поэтому .app собирается
 # на runner'е с macOS (macos-latest, Apple Silicon). С Windows мак-версию не собрать.
 #
-# Результат — артефакт ButtKIkersUnited-macOS с бандлом .app внутри.
-# Запуск локально: download артефакта → распаковать → open ButtKIkersUnited.app
+# Результат — два артефакта:
+#   ButtKIkersUnited-macOS-dmg  — .dmg (двойной клик, перетащить в Applications)
+#   ButtKIkersUnited-macOS-targz — .tar.gz (если dmg не открывается)
+#
+# Упаковка делается НА раннере (hdiutil / tar), а не upload-artifact'ом: тот кладёт
+# содержимое в zip и теряет права на файлы и симлинки — из-за этого в бандле ломается
+# _internal/Python и игра не стартует с ошибкой "shared library not found".
 name: Сборка macOS
 
 on:
@@ -36,15 +41,43 @@ jobs:
       - name: Сборка
         run: python build_exe.py
 
-      - name: Проверка результата
+      - name: Проверка бандла
         run: |
-          test -d "build/ButtKIkersUnited.app" || { echo "бандл .app не создан"; exit 1; }
-          du -sh "build/ButtKIkersUnited.app"
+          APP="build/ButtKIkersUnited.app"
+          test -d "$APP" || { echo "бандл .app не создан"; exit 1; }
+          echo "---- структура ----"
+          ls -la "$APP/Contents/MacOS" || true
+          ls -la "$APP/Contents" || true
+          echo "---- есть ли _internal и Python ----"
+          find "$APP" -maxdepth 3 -name "_internal" -o -maxdepth 3 -name "Python" | head -20
+          du -sh "$APP"
 
-      - name: Загрузить артефакт
+      - name: Адаптивная подпись (обход Gatekeeper)
+        # -s - = ad-hoc подпись, своей подписи нет. Без неё macOS может отказать
+        # в запуске неподписанного бинарника даже после правого клика.
+        run: codesign --force --deep --sign - "build/ButtKIkersUnited.app" || true
+
+      - name: Упаковка tar.gz (права и симлинки сохраняются)
+        run: |
+          tar -C build -czf build/ButtKIkersUnited-macOS.tar.gz ButtKIkersUnited.app
+          ls -la build/*.tar.gz
+
+      - name: Упаковка dmg
+        # hdiutil собирает образ из содержимого каталога, хранит права как на macOS.
+        run: |
+          hdiutil create \
+            -volname "ButtKIkersUnited" \
+            -srcfolder "build/ButtKIkersUnited.app" \
+            -ov -format UDZO \
+            "build/ButtKIkersUnited-macOS.dmg"
+          ls -la build/*.dmg
+
+      - name: Загрузить артефакты
         uses: actions/upload-artifact@v4
         with:
           name: ButtKIkersUnited-macOS
-          path: build/ButtKIkersUnited.app
+          path: |
+            build/ButtKIkersUnited-macOS.dmg
+            build/ButtKIkersUnited-macOS.tar.gz
           if-no-files-found: error
           retention-days: 14
